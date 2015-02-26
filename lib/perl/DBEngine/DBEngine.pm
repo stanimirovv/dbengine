@@ -10,7 +10,7 @@ my $data_types =    {
                                         name            => 'integer',
                                         constraints     => undef,
                                         pack            => \&PackInteger,
-                                        decode          => 31,
+                                        unpack          => \&UnpackInteger,
                                     },
                         text    =>  {
                                         encoding_value  => 2,
@@ -62,8 +62,15 @@ sub UnpackInteger($)
 {
     my ($fh) = @_;
 
-    #ASSERT(defined $bytes, "Undefined bytes to unpack!");
-    #return unpack('i', $bytes); #dies if not a number 
+    my $bytes;
+    my $bytes_read = read($fh, $bytes, 4);
+    ASSERT(defined $bytes_read, " Cloud not read from file"); 
+    if($bytes_read == 0)
+    {
+        #TODO handle end of file correctly...
+    }
+
+    return unpack('i', $bytes); #dies if not a number 
 }
 
 sub PackText($$)
@@ -355,10 +362,40 @@ The value is the value which the column must be equal to
 If the value is undefined the entire table will be returned.
 =cut
 
-sub GetEntryByValue($$$)
+sub GetEntryByValue($$;$)
 {
     my ($self, $table_name, $value) = @_;
 
+    ASSERT(defined $self);
+    ASSERT(defined $table_name);
+    ASSERT($table_name ne '');
+    if(defined $value)
+    {
+        ASSERT(ref($value) eq 'HASH');
+    }
+
+    my $table_data = $self->GetTableDetails($table_name);
+    ASSERT(defined $table_data);
+    
+    my $fh;
+    open($fh, "<", "$$self{connection}/$table_name") or die "Cloud not open db for reading!".$!;
+
+    my @columns = keys %{$$table_data{columns}};
+    my $rows = ();
+    my $row;
+    while(1)
+    {
+        $row = {};
+        # read one row. 
+        for my $element (@columns)
+        {
+            $$row{$element} = $$data_types{$$table_data{columns}{$element}}{unpack}->($fh);
+            print "PRINTING READ VALUE:",  $$row{$element};
+            return;
+        }
+    }
+    push(@$rows, $row);
+    return $rows;
 }
 
 sub GetEntryByExpression()
