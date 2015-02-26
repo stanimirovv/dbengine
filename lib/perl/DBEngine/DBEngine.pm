@@ -136,6 +136,18 @@ sub GetTableDetails($;$)
 
 }
 
+=pod
+    Creates a table. If a table with the name exists, it throws an exception.
+@paramIN table_schema - an array reference which contains hashrefs of the following structure:
+    {
+        name => 'string' which contains the name
+        type => int which contains the index of the type. The index of the types can be seen
+                in the beginning of the module
+    }
+    both elements should be present, or operation will be aborted.
+=cut
+#TODO write only if the entire table is ok with the encoding. Since it will damage the wannabe database
+
 sub CreateTable($$$)
 {
     my ($self, $table_name, $table_schema) = @_;
@@ -146,6 +158,7 @@ sub CreateTable($$$)
     ASSERT($table_name ne '', 'A table can not have an empty name!');
     ASSERT($table_name ne "$$self{connection}_meta", "This name is reserved!");
     ASSERT(defined $table_schema, 'A table needs to have a schema!');
+    #TODO die if table contains spaces
 
     #chdir $$self{connection};
 
