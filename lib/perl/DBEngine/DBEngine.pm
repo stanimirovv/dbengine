@@ -6,26 +6,34 @@ use warnings;
 use Data::Dumper;
 
 my $data_types =    {
-                        integer =>  {
-                                        encoding_value  => 1,
+                        1 =>  {
+                                        name            => 'integer',
                                         constraints     => undef,
-                                        encode          => 12,
+                                        pack            => \&PackInteger,
                                         decode          => 31,
                                     },
                         text    =>  {
                                         encoding_value  => 2,
                                         constraints     => undef,
-                                        encode          => 12,
-                                        decode          => 31,
+                                        pack            => 12,
+                                        unpack          => 31,
                                     },
                         boolean =>  {
                                         encoding_value  => 3,
                                         constraints     => \&BooleanConstraints,
-                                        encode          => 12,
-                                        decode          => 31,
+                                        pack            => 12,
+                                        unpack          => 31,
                                     },
                     };
                     
+
+=documentation
+    All constraints methods will take the same arguments:
+@paramIn    The value which must be validated. 
+@paramIn optional array of the values in the table in which the value
+should be inserted
+=cut
+#TODO implement it
 
 sub BooleanConstraints($)
 {
@@ -35,12 +43,19 @@ sub BooleanConstraints($)
     ASSERT($val == 1 ||  $val == 0, 'Bad value for the boolean!');
 }
 
+=documentation
+    All pack functions return the same thing
+@return a list of scalars containing the bytes of the different part of the string.
+=cut
+
 sub PackInteger($$)
 {
-    my ($fh, $integer) = @_;
+    my ($integer) = @_;
     
     ASSERT(defined $integer, "Undefined integer!");
-    return pack('i', int($integer)); #dies if not a number
+    my $ref = ();
+    push(@$ref, pack('i', int($integer))); #dies if not a number
+    return $ref;
 }
 
 sub UnpackInteger($)
@@ -205,7 +220,7 @@ sub GetTableDetails($;$)
             $first_iter = 0;
         }
 
-        push(@{$$table{columns}}, $columns); 
+        $$table{columns} = $columns;
 
         if($$table{name} eq $search_for_table_name)
         {
@@ -214,7 +229,7 @@ sub GetTableDetails($;$)
     }
 }
 
-=pod
+=documentation
     Creates a table. If a table with the name exists, it throws an exception.
 @paramIN table_schema - an array reference which contains hashrefs of the following structure:
     {
@@ -288,6 +303,13 @@ sub DropTable($$)
 
 }
 
+=documentation
+@paramIN values a hashref containing as keys the name of the columns and as values the values
+that should be inserted. 
+No extra fields are allowed! 
+No null fields are allowed!
+=cut
+
 sub InsertInto($$$)
 {
     my ($self, $table, $values) = @_;
@@ -296,13 +318,38 @@ sub InsertInto($$$)
     ASSERT(ref($values) eq 'HASH', "The passed values is not in the correct format!");
 
     my $table_info = $self->GetTableDetails($table);
-    
-    ASSERT(defined $table_info, "The table in which an insert is attempted doesn't exist");
-     
+    my $fh;
+    open($fh, '>>', "$$self{connection}/$table") or die " Cloud not open the table".$!;
 
+    ASSERT(defined $table_info, "The table in which an insert is attempted doesn't exist");
+    #ASSERT(scalar(keys(%{$$table{columns}}) == scalar(keys(%$values), "The number of columns to insert doesn't match the number of columns in the table");
+    print Dumper $table_info;
+
+    my @bytes = ();
+    for my $key (keys %$values)
+    {
+        ASSERT(defined $$table_info{columns}{$key}, " trying to insert an unknown column!");
+        
+        # TODO fix the constraints problem...
+        #if(defined $$table_info{columns}{$key}{constraints})
+        #{
+            # TODO read all data
+        #    $$data_types{$$table_info{columns}{$key}}->constraints();
+        #}
+        push(@bytes, $$data_types{$$table_info{columns}{$key}}{pack}->($$values{$key}));
+    }
+    for my $vals_bytes (@bytes)
+    {
+        for my $bytes (@$vals_bytes)
+        {
+            print $fh $bytes;
+        }
+    }
+
+    close($fh) or die "Cloud not close table fh!".$!;
 }
 
-=pod
+=documentation
 @param $value a hashref with one key. The key is the column. 
 The value is the value which the column must be equal to
 If the value is undefined the entire table will be returned.
