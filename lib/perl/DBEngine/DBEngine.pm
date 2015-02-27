@@ -7,7 +7,6 @@ use Data::Dumper;
 use Try::Tiny;
 
 #TODO add constraints
-#TODO add tests
 #TODO expaind documentation
 =pod
     Below are the definitions for every implemented data type.
