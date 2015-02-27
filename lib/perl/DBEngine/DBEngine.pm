@@ -6,27 +6,95 @@ use warnings;
 use Data::Dumper;
 use Try::Tiny;
 
+#TODO expaind documentation
+=pod
+    Below are the definitions for every implemented data type.
+=cut
+
 my $data_types =    {
-                        1 =>  {
+                        1   =>  {
                                         name            => 'integer',
                                         constraints     => undef,
                                         pack            => \&PackInteger,
                                         unpack          => \&UnpackInteger,
+                                        compare         => \&CompareIntegers,
+
                                     },
-                        2    =>  {
-                                        encoding_value  => 2,
+                        2   =>  {
+                                        name            => 'text',
                                         constraints     => undef,
                                         pack            => \&PackText,
                                         unpack          => \&UnpackText,
+                                        compare         => \&CompareText,
                                     },
-                        boolean =>  {
-                                        encoding_value  => 3,
+                        3   =>  {
+                                        name            => 'boolean',
                                         constraints     => \&BooleanConstraints,
                                         pack            => 12,
                                         unpack          => 31,
+                                        compare         => 'TODO',
                                     },
                     };
                     
+
+=documentation
+    All compare functions will have the following params:
+@parmIN first instance of type to be compared
+@paramIN second instance of type to be compared
+@paramIN how they should be compared (<, >, ==)
+@return 1 if true, 0 if false
+=cut
+
+sub CompareIntegers($$$)
+{
+    my ($a, $b, $by) = @_;
+
+    ASSERT(defined $a);
+    ASSERT(defined $b);
+    ASSERT(defined $by);
+    ASSERT($by eq "<" || $by eq "==" || $by eq ">", "BAD FORMAT FOR COMPARE INT");
+
+    if($by eq "<")
+    {
+        return $a < $b;
+    }
+    if($by eq ">")
+    {
+        return $a > $b;
+    }
+    if($by eq "==")
+    {
+        return $a == $b;
+    }
+
+    ASSERT(0);
+}
+
+sub CompareText($$$)
+{
+    my ($a, $b, $by) = @_;
+
+    ASSERT(defined $a);
+    ASSERT(defined $b);
+    ASSERT(defined $by);
+    ASSERT($by eq "<" || $by eq "==" || $by eq ">", "BAD FORMAT FOR COMPARE INT");
+
+    if($by eq "<")
+    {
+        return $a lt $b;
+    }
+    if($by eq ">")
+    {
+        return $a gt $b;
+    }
+    if($by eq "==")
+    {
+        return $a eq $b;
+    }
+
+    ASSERT(0);
+}
+
 
 =documentation
     All constraints methods will take the same arguments:
@@ -49,7 +117,7 @@ sub BooleanConstraints($)
 @return a list of scalars containing the bytes of the different part of the string.
 =cut
 
-sub PackInteger($$)
+sub PackInteger($)
 {
     my ($integer) = @_;
     
@@ -143,6 +211,9 @@ sub CreateDatabase($$)
     close $fh;
 }
 
+=documentation
+Dropping is irreversable.
+=cut
 sub DropDatabase($$)
 {
     my ($self, $dbname) = @_;
@@ -164,13 +235,15 @@ sub Connect($$)
 
 }
 
+=documentation
+Currently this function does nothing.
+=cut
+
 sub Disconnect($)
 {
     my ($self) = @_;
 
     ASSERT(defined $self);
-    ASSERT(defined $$self{meta});
-
 }
 
 =documentation
@@ -367,12 +440,7 @@ sub InsertInto($$$)
     {
         ASSERT(defined $$table_info{columns_hash}{$key}, " trying to insert an unknown column!");
         
-        # TODO fix the constraints problem...
-        #if(defined $$table_info{columns}{$key}{constraints})
-        #{
-            # TODO read all data
-        #    $$data_types{$$table_info{columns}{$key}}->constraints();
-        #}
+        # TODO add constraints
         push(@bytes, $$data_types{$$table_info{columns_hash}{$key}}{pack}->($$values{$key}));
     }
     for my $vals_bytes (@bytes)
@@ -387,12 +455,12 @@ sub InsertInto($$$)
 }
 
 =documentation
-@param $value a hashref with two keys => column_name and desired_value 
+@param $value an arref containing hashrefs with  keys: column_name and desired_value, compare_by which is '<', '>' or '==' 
 The value is the value which the column must be equal to
 If the value is undefined the entire table will be returned.
 =cut
 
-sub GetEntryByValue($$;$)
+sub GetEntriesByValue($$;$)
 {
     my ($self, $table_name, $filters) = @_;
 
@@ -402,7 +470,8 @@ sub GetEntryByValue($$;$)
 
     my $table_data = $self->GetTableDetails($table_name);
     ASSERT(defined $table_data);
-    
+    ASSERT(defined $$table_data{columns});
+
     my $fh;
     open($fh, "<", "$$self{connection}/$table_name") or die "Cloud not open db for reading!".$!;
 
@@ -416,6 +485,8 @@ sub GetEntryByValue($$;$)
         # read one row. 
         for my $element (@{$$table_data{columns}})
         {
+            ASSERT(defined $$element{column_name});
+            ASSERT(defined $$element{column_type});
             try
             {
                 $$row{$$element{column_name}} = $$data_types{$$element{column_type}}{unpack}->($fh);
@@ -432,7 +503,6 @@ sub GetEntryByValue($$;$)
                 }
             };
 
-            #print "PRINTING READ VALUE:",  $$row{$element};
         }
         if($last_iter)
         {
@@ -446,9 +516,15 @@ sub GetEntryByValue($$;$)
             }
             else
             {
-                for my $look_for ($filters)
+                for my $look_for (@$filters)
                 {
-                    if(defined $look_for && $$row{$$look_for{column_name}} eq $$look_for{desired_value})
+                    ASSERT(defined $$look_for{column_name});
+                    ASSERT(defined $$look_for{desired_value});
+                    ASSERT(defined $$look_for{compare_by});
+
+                    print "ROw", Dumper $row;
+                    print "look for", Dumper $look_for;
+                    if(CompareIntegers($$row{$$look_for{column_name}}, $$look_for{desired_value}, $$look_for{compare_by}))
                     {
                         push(@$rows, $row);
                         last;
@@ -462,19 +538,49 @@ sub GetEntryByValue($$;$)
     return $rows;
 }
 
-sub DeleteEntireTable()
+sub DeleteEntireTable($$)
 {
+    my ($self, $table_name) = @_;
 
+    ASSERT(defined $self);
+    ASSERT(defined $table_name);
+    ASSERT($table_name ne '');
+
+    my $fh;
+    open($fh, ">", "$$self{connection}/$table_name") or die "Cloud not open db for reading!".$!;
+    $| = 1;
+    print $fh "";
+
+    close $fh or die "Cloud not close fh..".$!;
 }
 
-sub DeleteEntryByValue()
+=documentation
+@paramIN filter hashref containing two keys: column_name and desired_value
+@paramIN new_row hashref with the new row.
+=cut
+
+sub Update($$$$)
 {
+    my ($self, $table_name, $filter, $new_row) = @_;
 
-}
+    ASSERT(defined $self);
+    ASSERT(defined $table_name);
+    ASSERT($table_name ne '');
+    ASSERT(defined $filter);
+    ASSERT(defined $new_row);
 
-sub DeleteEntriesByExpression()
-{
+    my $rows = $self->GetEntriesByValue($table_name);
 
+    $$self->DeleteEntireTable($table_name);
+
+    for my $row (@$rows)
+    {
+        print "rrow:", Dumper($row);
+        if($$row{$$filter{column_name}} == $$filter{desired_value})
+        {
+            $self->InsertNewRow($table_name, $new_row);  
+        }
+    }
 }
 
 
