@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use Data::Dumper;
+use Try::Tiny;
 
 my $data_types =    {
                         1 =>  {
@@ -12,11 +13,11 @@ my $data_types =    {
                                         pack            => \&PackInteger,
                                         unpack          => \&UnpackInteger,
                                     },
-                        text    =>  {
+                        2    =>  {
                                         encoding_value  => 2,
                                         constraints     => undef,
-                                        pack            => 12,
-                                        unpack          => 31,
+                                        pack            => \&PackText,
+                                        unpack          => \&UnpackText,
                                     },
                         boolean =>  {
                                         encoding_value  => 3,
@@ -67,21 +68,47 @@ sub UnpackInteger($)
     ASSERT(defined $bytes_read, " Cloud not read from file"); 
     if($bytes_read == 0)
     {
-        #TODO handle end of file correctly...
+        die "EOF";
     }
 
     return unpack('i', $bytes); #dies if not a number 
 }
 
-sub PackText($$)
+sub PackText($)
 {
-    my ($fh, $text) = @_;
+    #my ($fh, $text) = @_;
+    my ($text) = @_;
+
+    ASSERT(defined $text, "Undefined text!");
+    
+    my $text_length = length($text);
+    
+    my $ref = ();
+    push(@$ref, pack('i', $text_length)); #dies if not a number
+    push(@$ref, pack("a$text_length", $text)); 
+    return $ref;
 
 }
 
 sub UnpackText($)
 {
     my ($fh) = @_;
+
+    my $bytes;
+    my $bytes_read = read($fh, $bytes, 4);
+    ASSERT(defined $bytes_read, " Cloud not read from file"); 
+    if($bytes_read == 0)
+    {
+        die "EOF";
+    }
+    my $text_length = unpack('i', $bytes) or die "Error when unpacking int".$!;
+    $bytes_read = read($fh, $bytes, $text_length);
+    if($bytes_read == 0)
+    {
+        die "EOF";
+    }
+
+    return unpack("a$text_length", $bytes); #dies if not a number 
 
 }
 
@@ -134,7 +161,6 @@ sub Connect($$)
     ASSERT($dbname ne '', 'empty string for dbname is not acceptable!');
 
     $$self{connection} = $dbname;
-    open $$self{meta}, "<", "$$self{root}$$self{connection}/$$self{connection}"."_meta" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
 
 }
 
@@ -144,8 +170,6 @@ sub Disconnect($)
 
     ASSERT(defined $self);
     ASSERT(defined $$self{meta});
-
-    $$self{meta}->close() or die "Cloud not close the meta fh!  ".$!;
 
 }
 
@@ -165,6 +189,8 @@ sub GetTableDetails($;$)
     {
         ASSERT($search_for_table_name ne '');
     }
+    print "Entering GetTableDetails\n";
+    open $$self{meta}, "<", "$$self{root}$$self{connection}/$$self{connection}"."_meta" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
 
     while(1)
     {
@@ -194,10 +220,9 @@ sub GetTableDetails($;$)
         print "Table name is: $table_name \n"; 
     
         $$table{name} = $table_name;
-
         my $first_iter = 1;
         my $columns = {};
-
+        my $columns_names = ();
         #read all columns
         while(1)
         {    
@@ -223,12 +248,15 @@ sub GetTableDetails($;$)
             my $column_name = unpack("a$column_name_length", $bytes);
             print "Column name is: $column_name \n";
          
+            push(@{$$table{columns}}, {'column_name' => $column_name, 'column_type' => $column_type});
             $$columns{$column_name} = $column_type;
             $first_iter = 0;
+            push(@$columns_names, $column_name);
         }
-
-        $$table{columns} = $columns;
-
+        
+        $$table{columns_hash} = $columns;
+        $$table{columns_names} = $columns_names;
+        close($$self{meta});
         if($$table{name} eq $search_for_table_name)
         {
             return $table;
@@ -324,6 +352,8 @@ sub InsertInto($$$)
     ASSERT(defined $values);
     ASSERT(ref($values) eq 'HASH', "The passed values is not in the correct format!");
 
+    print "Entering Insert into...\n";
+
     my $table_info = $self->GetTableDetails($table);
     my $fh;
     open($fh, '>>', "$$self{connection}/$table") or die " Cloud not open the table".$!;
@@ -333,9 +363,9 @@ sub InsertInto($$$)
     print Dumper $table_info;
 
     my @bytes = ();
-    for my $key (keys %$values)
+    for my $key (@{$$table_info{columns_names}})
     {
-        ASSERT(defined $$table_info{columns}{$key}, " trying to insert an unknown column!");
+        ASSERT(defined $$table_info{columns_hash}{$key}, " trying to insert an unknown column!");
         
         # TODO fix the constraints problem...
         #if(defined $$table_info{columns}{$key}{constraints})
@@ -343,7 +373,7 @@ sub InsertInto($$$)
             # TODO read all data
         #    $$data_types{$$table_info{columns}{$key}}->constraints();
         #}
-        push(@bytes, $$data_types{$$table_info{columns}{$key}}{pack}->($$values{$key}));
+        push(@bytes, $$data_types{$$table_info{columns_hash}{$key}}{pack}->($$values{$key}));
     }
     for my $vals_bytes (@bytes)
     {
@@ -357,22 +387,18 @@ sub InsertInto($$$)
 }
 
 =documentation
-@param $value a hashref with one key. The key is the column. 
+@param $value a hashref with two keys => column_name and desired_value 
 The value is the value which the column must be equal to
 If the value is undefined the entire table will be returned.
 =cut
 
 sub GetEntryByValue($$;$)
 {
-    my ($self, $table_name, $value) = @_;
+    my ($self, $table_name, $filters) = @_;
 
     ASSERT(defined $self);
     ASSERT(defined $table_name);
     ASSERT($table_name ne '');
-    if(defined $value)
-    {
-        ASSERT(ref($value) eq 'HASH');
-    }
 
     my $table_data = $self->GetTableDetails($table_name);
     ASSERT(defined $table_data);
@@ -380,27 +406,60 @@ sub GetEntryByValue($$;$)
     my $fh;
     open($fh, "<", "$$self{connection}/$table_name") or die "Cloud not open db for reading!".$!;
 
-    my @columns = keys %{$$table_data{columns}};
     my $rows = ();
     my $row;
+
+    my $last_iter = 0;
     while(1)
     {
         $row = {};
         # read one row. 
-        for my $element (@columns)
+        for my $element (@{$$table_data{columns}})
         {
-            $$row{$element} = $$data_types{$$table_data{columns}{$element}}{unpack}->($fh);
-            print "PRINTING READ VALUE:",  $$row{$element};
-            return;
+            try
+            {
+                $$row{$$element{column_name}} = $$data_types{$$element{column_type}}{unpack}->($fh);
+            }
+            catch
+            {
+                if(index($_, 'EOF') != -1)
+                {
+                    $last_iter = 1;
+                }
+                else
+                {
+                    die $_;
+                }
+            };
+
+            #print "PRINTING READ VALUE:",  $$row{$element};
+        }
+        if($last_iter)
+        {
+            last;
+        }
+        else
+        {
+            if(!defined $filters)
+            {
+                push(@$rows, $row);
+            }
+            else
+            {
+                for my $look_for ($filters)
+                {
+                    if(defined $look_for && $$row{$$look_for{column_name}} eq $$look_for{desired_value})
+                    {
+                        push(@$rows, $row);
+                        last;
+                    }
+                }
+            }
         }
     }
-    push(@$rows, $row);
+
+    close $fh or die "can't close fh".$!;
     return $rows;
-}
-
-sub GetEntryByExpression()
-{
-
 }
 
 sub DeleteEntireTable()
@@ -423,6 +482,7 @@ sub ASSERT($;$)
 {
     my ($expression, $message) = @_;
 
+    $message = $message || "";
     if(!$expression)
     {
         die "ASSERT FAILED! Line:", (caller(0))[2], ,"  ", $message, "\n";
