@@ -7,6 +7,7 @@ use Data::Dumper;
 use Try::Tiny;
 
 #TODO add constraints
+#TODO add assert that no column name starts with meta.
 #TODO expaind documentation
 =pod
     Below are the definitions for every implemented data type.
@@ -28,15 +29,20 @@ my $data_types =    {
                                         unpack          => \&UnpackText,
                                         compare         => \&CompareText,
                                     },
+
                         3   =>  {
-                                        name            => 'boolean',
+                                        name            => 'positive_int',
                                         constraints     => \&BooleanConstraints,
                                         pack            => 12,
                                         unpack          => 31,
                                         compare         => 'TODO',
                                     },
                     };
-                    
+
+
+my $data_manipulate_methods = { };
+
+################################ TYPES ########################################
 
 =documentation
     All compare functions will have the following params:
@@ -99,13 +105,13 @@ sub CompareText($$$)
 
 =documentation
     All constraints methods will take the same arguments:
-@paramIn    The value which must be validated. 
-@paramIn optional array of the values in the table in which the value
+@paramIn    The value which must be validated.
+@paramIn optional file handle to the table in which is inserted (to check for unique for example)
 should be inserted
 =cut
 #TODO implement it
 
-sub BooleanConstraints($)
+sub BooleanConstraints($;$)
 {
     my ($val) = @_;
 
@@ -121,51 +127,62 @@ sub BooleanConstraints($)
 sub PackInteger($)
 {
     my ($integer) = @_;
-    
+
     ASSERT(defined $integer, "Undefined integer!");
+
+    #It is an array ref since most types will contain more than one field
+    #For example text has two - length and data
     my $ref = ();
     push(@$ref, pack('i', int($integer))); #dies if not a number
     return $ref;
 }
 
-sub UnpackInteger($)
-{
-    my ($fh) = @_;
+=documentation
+    Since meta information will be stored in the beginning of each row it is a good idea to
+    store the position of the beginning of the columns in order to be able to update them without
+    rewriting the entire file.
+@param positions - array ref containing the positions of each column
+=cut
 
+sub UnpackInteger($$)
+{
+    my ($fh, $positions) = @_;
+
+    my $file_pos = tell($fh);
     my $bytes;
     my $bytes_read = read($fh, $bytes, 4);
-    ASSERT(defined $bytes_read, " Cloud not read from file"); 
+    ASSERT(defined $bytes_read, " Cloud not read from file");
     if($bytes_read == 0)
     {
         die "EOF";
     }
-
-    return unpack('i', $bytes); #dies if not a number 
+    push(@$positions, $file_pos);
+    return unpack('i', $bytes); #dies if not a number
 }
 
 sub PackText($)
 {
-    #my ($fh, $text) = @_;
     my ($text) = @_;
 
     ASSERT(defined $text, "Undefined text!");
-    
+
     my $text_length = length($text);
-    
+
     my $ref = ();
     push(@$ref, pack('i', $text_length)); #dies if not a number
-    push(@$ref, pack("a$text_length", $text)); 
+    push(@$ref, pack("a$text_length", $text));
     return $ref;
 
 }
 
-sub UnpackText($)
+sub UnpackText($$)
 {
-    my ($fh) = @_;
+    my ($fh, $positions) = @_;
 
+    my $file_pos = tell($fh);
     my $bytes;
     my $bytes_read = read($fh, $bytes, 4);
-    ASSERT(defined $bytes_read, " Cloud not read from file"); 
+    ASSERT(defined $bytes_read, " Cloud not read from file");
     if($bytes_read == 0)
     {
         die "EOF";
@@ -176,10 +193,16 @@ sub UnpackText($)
     {
         die "EOF";
     }
+    push(@$positions, $file_pos);
 
-    return unpack("a$text_length", $bytes); #dies if not a number 
+    return unpack("a$text_length", $bytes); #dies if not a number
 
 }
+
+############################# END TYPES #######################################
+
+############################# API #############################################
+
 
 =documentation
 @paramIN root the path in which the databases are stored
@@ -247,96 +270,6 @@ sub Disconnect($)
     ASSERT(defined $self);
 }
 
-=documentation
-@paramIN search_for_table_name
-@return returns undefined if there is no such table or a hashref
-the hashref has 2 keys - name and columns. The columns are a hashref which
-contains as key the column name and as value the int type of the column
-=cut
-
-sub GetTableDetails($;$)
-{
-    my ($self, $search_for_table_name) = @_;
-
-    ASSERT(defined $self, ' undefined self');
-    if(defined $search_for_table_name)
-    {
-        ASSERT($search_for_table_name ne '');
-    }
-    print "Entering GetTableDetails\n";
-    open $$self{meta}, "<", "$$self{root}$$self{connection}/$$self{connection}"."_meta" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
-
-    while(1)
-    {
-        my $table  = { columns => []};
-        
-        my $bytes;
-        my $bytes_read = read($$self{meta}, $bytes, 4);
-        ASSERT(defined $bytes_read, "Error in reading the bytes!");
-        if($bytes_read == 0)
-        {
-            return;
-        }
-    
-        # Every table starts and ends with a zero
-        my $unpacked_bytes = unpack('i', $bytes);
-        ASSERT($unpacked_bytes == 0); 
-
-        $bytes_read = read($$self{meta}, $bytes, 4);
-        ASSERT($bytes_read == 4, 'Error when reading the table length(name)');    
-        my $table_name_length = unpack('i', $bytes) or die "Can't unpack the table name's length";
-        print "Table name length: $table_name_length \n";
-    
-        $bytes_read = read($$self{meta}, $bytes, $table_name_length);
-        print "bytes, read = $bytes_read \n";
-        ASSERT($bytes_read > 0, " Bad db format!");
-        my $table_name = unpack("a$bytes_read", $bytes); 
-        print "Table name is: $table_name \n"; 
-    
-        $$table{name} = $table_name;
-        my $first_iter = 1;
-        my $columns = {};
-        my $columns_names = ();
-        #read all columns
-        while(1)
-        {    
-            $bytes_read = read($$self{meta}, $bytes, 4);
-            ASSERT($bytes_read > 0, "Bad db format! (column type)");
-            my $column_type = unpack('i', $bytes);
-            print "Column type is : $column_type \n";
-            if($column_type == 0)
-            {
-                last;
-            }
-            
-            $bytes_read = read($$self{meta}, $bytes, 4);
-            if(!$first_iter && $bytes_read == 0)
-            {
-                last; 
-            }
-            ASSERT($bytes_read > 0, "Bad db format! (column name length)");
-            my $column_name_length = unpack('i', $bytes);
-            $bytes_read = read($$self{meta}, $bytes, $column_name_length);
-            ASSERT($bytes_read > 0, "Bad db format! (column name value)");
-
-            my $column_name = unpack("a$column_name_length", $bytes);
-            print "Column name is: $column_name \n";
-         
-            push(@{$$table{columns}}, {'column_name' => $column_name, 'column_type' => $column_type});
-            $$columns{$column_name} = $column_type;
-            $first_iter = 0;
-            push(@$columns_names, $column_name);
-        }
-        
-        $$table{columns_hash} = $columns;
-        $$table{columns_names} = $columns_names;
-        close($$self{meta});
-        if($$table{name} eq $search_for_table_name)
-        {
-            return $table;
-        }
-    }
-}
 
 =documentation
     Creates a table. If a table with the name exists, it throws an exception.
@@ -369,27 +302,30 @@ sub CreateTable($$$)
     ASSERT(!defined($table), "Table alredy exists!");
 
     seek($$self{meta}, 0, 0);
-    
+
     # all databases are stored in the meta file
     my $fh;
-    open $fh, ">>", "$$self{root}$$self{connection}/$$self{connection}"."_meta" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
+    open $fh, ">>", "$$self{root}/$$self{connection}/$$self{connection}"."_meta" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
     $| = 1;
     my $table_name_length = length($table_name);
 
     # Every table definition starts with a zero
     my $bytes = pack("i i a$table_name_length", 0, $table_name_length, $table_name) or die "Cloud not pack new table name!";
     print $fh $bytes or die " ".$!;
-    
+
+    #column with meta data storing if the row is deleted or not.
+    unshift(@$table_schema, {name => "meta_is_deleted", type => 1});
+
     #add every column
     for my $column (@$table_schema)
     {
         ASSERT(defined $$column{name}, " Undefined column name");
         ASSERT(defined $$column{type}, " Undefined column type");
-    
+
         my $column_name_length = length($$column{name});
         $bytes = pack("i i a$column_name_length", $$column{type}, $column_name_length, $$column{name}) or die " Cloud not pack new column!";
         print $fh $bytes or die " ".$!;
-    } 
+    }
 
     # Every table definition starts and ends with a zero
     $bytes = pack("i", 0);
@@ -414,8 +350,7 @@ sub DropTable($$)
 
 =documentation
 @paramIN values a hashref containing as keys the name of the columns and as values the values
-that should be inserted. 
-No extra fields are allowed! 
+that should be inserted.
 No null fields are allowed!
 =cut
 
@@ -426,7 +361,6 @@ sub InsertInto($$$)
     ASSERT(defined $values);
     ASSERT(ref($values) eq 'HASH', "The passed values is not in the correct format!");
 
-    print "Entering Insert into...\n";
 
     my $table_info = $self->GetTableDetails($table);
     my $fh;
@@ -434,14 +368,16 @@ sub InsertInto($$$)
 
     ASSERT(defined $table_info, "The table in which an insert is attempted doesn't exist");
     #ASSERT(scalar(keys(%{$$table{columns}}) == scalar(keys(%$values), "The number of columns to insert doesn't match the number of columns in the table");
-    print Dumper $table_info;
+
+    # make sure the row isn't inserted as deleted.
+    $$values{meta_is_deleted} = 0;
 
     my @bytes = ();
     for my $key (@{$$table_info{columns_names}})
     {
-        ASSERT(defined $$table_info{columns_hash}{$key}, " trying to insert an unknown column!");
-        
-        # TODO add constraints
+        ASSERT(defined $$values{$key}, "Undefined values are not supported... yet... \n");
+
+        # TODO add constraints (again)
         push(@bytes, $$data_types{$$table_info{columns_hash}{$key}}{pack}->($$values{$key}));
     }
     for my $vals_bytes (@bytes)
@@ -455,15 +391,157 @@ sub InsertInto($$$)
     close($fh) or die "Cloud not close table fh!".$!;
 }
 
-=documentation
-@param $value an arref containing hashrefs with  keys: column_name and desired_value, compare_by which is '<', '>' or '==' 
-The value is the value which the column must be equal to
-If the value is undefined the entire table will be returned.
-=cut
+sub TruncateTable($$)
+{
+    my ($self, $table_name) = @_;
 
-sub GetEntriesByValue($$;$)
+    ASSERT(defined $self);
+    ASSERT(defined $table_name);
+    ASSERT($table_name ne '');
+
+    my $fh;
+    open($fh, ">", "$$self{connection}/$table_name") or die "Cloud not open db for reading!".$!;
+    $| = 1;
+    print $fh "";
+
+    close $fh or die "Cloud not close fh..".$!;
+}
+
+sub DeleteRows($$$)
 {
     my ($self, $table_name, $filters) = @_;
+
+    ASSERT( defined $self);
+    ASSERT(defined $table_name);
+    ASSERT($table_name ne '');
+
+    $self->MapEntries($table_name, 'delete', $filters);
+}
+
+
+=documentation
+@paramIN filter hashref containing two keys: column_name and desired_value
+@paramIN new_row hashref with the new row.
+=cut
+
+sub Update($$$$)
+{
+    my ($self, $table_name, $filter, $new_row) = @_;
+
+    ASSERT(defined $self);
+    ASSERT(defined $table_name);
+    ASSERT($table_name ne '');
+    #ASSERT(defined $filter);
+    ASSERT(defined $new_row);
+
+    $self->MapEntries('simple_text', 'update', $filter, {new_row => $new_row});
+}
+
+############################# END API #########################################
+
+############################# PRIVATE FUNCTIONS ###############################
+
+=documentation
+@paramIN search_for_table_name
+@return returns undefined if there is no such table or a hashref
+the hashref has 2 keys - name and columns. The columns are a hashref which
+contains as key the column name and as value the int type of the column
+=cut
+
+sub GetTableDetails($;$)
+{
+    my ($self, $search_for_table_name) = @_;
+
+    ASSERT(defined $self, ' undefined self');
+    if(defined $search_for_table_name)
+    {
+        ASSERT($search_for_table_name ne '');
+    }
+    open $$self{meta}, "<", "$$self{root}/$$self{connection}/$$self{connection}"."_meta" or die "Cloud not read meta file. Does $$self{root}/$$self{connection}/$$self{connection}_meta exist ? Are permissions ok?".$!;
+
+    while(1)
+    {
+        my $table  = { columns => []};
+
+        my $bytes;
+        my $bytes_read = read($$self{meta}, $bytes, 4);
+        ASSERT(defined $bytes_read, "Error in reading the bytes!");
+        if($bytes_read == 0)
+        {
+            return;
+        }
+
+        # Every table starts and ends with a zero
+        my $unpacked_bytes = unpack('i', $bytes);
+        ASSERT($unpacked_bytes == 0);
+
+        $bytes_read = read($$self{meta}, $bytes, 4);
+        ASSERT($bytes_read == 4, 'Error when reading the table length(name)');
+        my $table_name_length = unpack('i', $bytes) or die "Can't unpack the table name's length";
+        #print "Table name length: $table_name_length \n";
+
+        $bytes_read = read($$self{meta}, $bytes, $table_name_length);
+        #print "bytes, read = $bytes_read \n";
+        ASSERT($bytes_read > 0, " Bad db format!");
+        my $table_name = unpack("a$bytes_read", $bytes);
+        #print "Table name is: $table_name \n";
+
+        $$table{name} = $table_name;
+        my $first_iter = 1;
+        my $columns = {};
+        my $columns_names = ();
+        #read all columns
+        while(1)
+        {
+            $bytes_read = read($$self{meta}, $bytes, 4);
+            ASSERT($bytes_read > 0, "Bad db format! (column type)");
+            my $column_type = unpack('i', $bytes);
+            #print "Column type is : $column_type \n";
+            if($column_type == 0)
+            {
+                last;
+            }
+
+            $bytes_read = read($$self{meta}, $bytes, 4);
+            if(!$first_iter && $bytes_read == 0)
+            {
+                last;
+            }
+            ASSERT($bytes_read > 0, "Bad db format! (column name length)");
+            my $column_name_length = unpack('i', $bytes);
+            $bytes_read = read($$self{meta}, $bytes, $column_name_length);
+            ASSERT($bytes_read > 0, "Bad db format! (column name value)");
+
+            my $column_name = unpack("a$column_name_length", $bytes);
+            #print "Column name is: $column_name \n";
+
+            push(@{$$table{columns}}, {'column_name' => $column_name, 'column_type' => $column_type});
+            $$columns{$column_name} = $column_type;
+            $first_iter = 0;
+            push(@$columns_names, $column_name);
+        }
+
+        $$table{columns_hash} = $columns;
+        $$table{columns_names} = $columns_names;
+        close($$self{meta});
+        if($$table{name} eq $search_for_table_name)
+        {
+            return $table;
+        }
+    }
+}
+
+
+=documentation
+    This function Performs an operation after reading a row from the database
+@param filters an arref containing hashrefs with  keys: column_name and desired_value, compare_by which is '<', '>' or '=='
+The value is the value which the column must be equal to
+If the value is undefined the entire table will be returned.
+@param params - hashref which contains some command specific parameters
+=cut
+sub MapEntries($$$;$$)
+{
+    my ($self, $table_name, $method, $filters, $params) = @_;
 
     ASSERT(defined $self);
     ASSERT(defined $table_name);
@@ -478,19 +556,21 @@ sub GetEntriesByValue($$;$)
 
     my $rows = ();
     my $row;
-
+    my $positions = []; #contains the starting position (in bytes of every value)
     my $last_iter = 0;
+
     while(1)
     {
         $row = {};
-        # read one row. 
+        $positions = [];
+        # read one row.
         for my $element (@{$$table_data{columns}})
         {
             ASSERT(defined $$element{column_name});
             ASSERT(defined $$element{column_type});
             try
             {
-                $$row{$$element{column_name}} = $$data_types{$$element{column_type}}{unpack}->($fh);
+                $$row{$$element{column_name}} = $$data_types{$$element{column_type}}{unpack}->($fh, $positions);
             }
             catch
             {
@@ -507,9 +587,12 @@ sub GetEntriesByValue($$;$)
         }
         if($last_iter)
         {
-            last;
+            close $fh or die "$!";
+            return $rows;
         }
-        else
+
+        # do whatever must be done with the row
+        if(lc($method) eq 'select')
         {
             if(!defined $filters)
             {
@@ -523,9 +606,9 @@ sub GetEntriesByValue($$;$)
                     ASSERT(defined $$look_for{desired_value});
                     ASSERT(defined $$look_for{compare_by});
 
-                    print "ROw", Dumper $row;
-                    print "look for", Dumper $look_for;
-                    if(CompareIntegers($$row{$$look_for{column_name}}, $$look_for{desired_value}, $$look_for{compare_by}))
+                    # basically calls the compare function from the data_types object.
+                    # TODO make it more readable
+                    if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
                     {
                         push(@$rows, $row);
                         last;
@@ -533,56 +616,81 @@ sub GetEntriesByValue($$;$)
                 }
             }
         }
-    }
+        elsif(lc($method) eq 'update')
+        {
+            ASSERT(defined $$params{new_row});
+            if(!defined $filters)
+            {
+                print "tt1\n";
+                my $fh_d;
+                open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
+                seek($fh_d, $$positions[0], 0);
 
+                my $del = pack('i', 1);
+                print $fh_d $del;
+                close $fh_d;
+            }
+            else
+            {
+                for my $look_for (@$filters)
+                {
+                    ASSERT(defined $$look_for{column_name});
+                    ASSERT(defined $$look_for{desired_value});
+                    ASSERT(defined $$look_for{compare_by});
+
+                    my $fh_d;
+                    open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
+                    seek($fh_d, $$positions[0], 0);
+
+                    my $del = pack('i', 1);
+                    print $fh_d $del;
+                    close $fh_d;
+                }
+            }
+
+            $self->InsertInto($table_name, $$params{new_row});
+        }
+        elsif(lc $method eq 'delete')
+        {
+
+            if(!defined $filters)
+            {
+                my $fh_d;
+                open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
+                seek($fh_d, $$positions[0], 0);
+
+                my $del = pack('i', 1);
+                print $fh_d $del;
+                close $fh_d;
+            }
+            else
+            {
+                for my $look_for (@$filters)
+                {
+                    ASSERT(defined $$look_for{column_name});
+                    ASSERT(defined $$look_for{desired_value});
+                    ASSERT(defined $$look_for{compare_by});
+
+                    if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
+                    {
+                        my $fh_d;
+                        open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
+                        seek($fh_d, $$positions[0], 0);
+
+                        my $del = pack('i', 1);
+                        print $fh_d $del;
+                        close $fh_d;
+                        last;
+                    }
+                }
+            }
+
+        }
+    }
     close $fh or die "can't close fh".$!;
     return $rows;
 }
 
-sub DeleteEntireTable($$)
-{
-    my ($self, $table_name) = @_;
-
-    ASSERT(defined $self);
-    ASSERT(defined $table_name);
-    ASSERT($table_name ne '');
-
-    my $fh;
-    open($fh, ">", "$$self{connection}/$table_name") or die "Cloud not open db for reading!".$!;
-    $| = 1;
-    print $fh "";
-
-    close $fh or die "Cloud not close fh..".$!;
-}
-
-=documentation
-@paramIN filter hashref containing two keys: column_name and desired_value
-@paramIN new_row hashref with the new row.
-=cut
-
-sub Update($$$$)
-{
-    my ($self, $table_name, $filter, $new_row) = @_;
-
-    ASSERT(defined $self);
-    ASSERT(defined $table_name);
-    ASSERT($table_name ne '');
-    ASSERT(defined $filter);
-    ASSERT(defined $new_row);
-
-    my $rows = $self->GetEntriesByValue($table_name);
-
-    $$self->DeleteEntireTable($table_name);
-
-    for my $row (@$rows)
-    {
-        print "rrow:", Dumper($row);
-        if($$row{$$filter{column_name}} == $$filter{desired_value})
-        {
-            $self->InsertNewRow($table_name, $new_row);  
-        }
-    }
-}
 
 
 sub ASSERT($;$)
