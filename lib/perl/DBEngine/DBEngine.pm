@@ -5,6 +5,7 @@ use warnings;
 
 use Data::Dumper;
 use Try::Tiny;
+use Fcntl qw(:flock SEEK_END);
 
 #TODO add constraints
 #TODO add assert that no column name starts with meta.
@@ -335,6 +336,9 @@ sub CreateTable($$$)
     # Database data file
     open($fh, '>', "$$self{connection}/$table_name") or die "Can't create database file!".$!;
     close($fh) or die $!;
+
+    open $fh, ">>", "$$self{root}/$$self{connection}/$$self{connection}"."_index" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
+    close $fh or die "Cloud not close file...\n";
 }
 
 sub DropTable($$)
@@ -361,11 +365,11 @@ sub InsertInto($$$)
     ASSERT(defined $values);
     ASSERT(ref($values) eq 'HASH', "The passed values is not in the correct format!");
 
-
     my $table_info = $self->GetTableDetails($table);
     my $fh;
     open($fh, '>>', "$$self{connection}/$table") or die " Cloud not open the table".$!;
 
+    flock($fh, LOCK_EX) or die "Cloud not lock file!";
     ASSERT(defined $table_info, "The table in which an insert is attempted doesn't exist");
     #ASSERT(scalar(keys(%{$$table{columns}}) == scalar(keys(%$values), "The number of columns to insert doesn't match the number of columns in the table");
 
@@ -376,6 +380,23 @@ sub InsertInto($$$)
     for my $key (@{$$table_info{columns_names}})
     {
         ASSERT(defined $$values{$key}, "Undefined values are not supported... yet... \n");
+
+        if($key eq 'a')
+        {
+            open $fh1, ">>", "$$self{root}/$$self{connection}/$$self{connection}"."_index" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
+            
+            my @bytes_inner = ();
+            push @bytes_inner, PackInteger($$values{$key});
+            push @bytes_inner, PackInteger(tell($fh));
+            for my $vals_bytes (@bytes_inner)
+            {
+                for my $bytes (@$vals_bytes)
+                {   
+                    print $fh1 $bytes;
+                }   
+            }   
+            close $fh1 or die "Cloud not close file...\n";
+        }
 
         # TODO add constraints (again)
         push(@bytes, $$data_types{$$table_info{columns_hash}{$key}}{pack}->($$values{$key}));
@@ -559,6 +580,58 @@ sub MapEntries($$$;$$)
     my $positions = []; #contains the starting position (in bytes of every value)
     my $last_iter = 0;
 
+    if(lc $method eq "select_index")
+    {
+        my $index_rows = {}; 
+        # Read entire table..
+        for my $indexed_row (%{$index_rows})
+        {
+            $row = {};
+            $positions = [];
+        # read one row.
+            seek($fh, $$indexed_row{position});
+            for my $element (@{$$table_data{columns}})
+            {
+                ASSERT(defined $$element{column_name});
+                ASSERT(defined $$element{column_type});
+                try
+                {
+                    $$row{$$element{column_name}} = $$data_types{$$element{column_type}}{unpack}->($fh, $positions);
+                }
+                catch
+                {
+                    if(index($_, 'EOF') != -1)
+                    {
+                        $last_iter = 1;
+                    }
+                    else
+                    {
+                        die $_;
+                    }
+                };
+
+            }
+
+        }
+        for my $look_for (@$filters)
+        {
+            ASSERT(defined $$look_for{column_name});
+            ASSERT(defined $$look_for{desired_value});
+            ASSERT(defined $$look_for{compare_by});
+            if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
+            {
+                if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
+                {
+                    push(@$rows, $row);
+                    last;
+                }
+            }
+        }
+
+        return $rows;
+    }
+
+
     while(1)
     {
         $row = {};
@@ -657,6 +730,7 @@ sub MapEntries($$$;$$)
             {
                 my $fh_d;
                 open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
+                flock($fh_d, LOCK_EX) or die "Cloud not lock file (delete)\n";
                 seek($fh_d, $$positions[0], 0);
 
                 my $del = pack('i', 1);
