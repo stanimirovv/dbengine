@@ -527,6 +527,11 @@ sub Update($$$$)
 sub GetIndex($$)
 {
     my ($self, $table_name) = @_;
+
+    ASSERT(defined $self);
+    ASSERT(defined $table_name);
+    ASSERT($table_name ne '');
+
     my $rows = [];
     my $fh;
 
@@ -540,6 +545,7 @@ sub GetIndex($$)
                 my $row = {};
                 $$row{id} = UnpackInteger($fh);
                 $$row{record_begin} = UnpackInteger($fh);
+                $$row{records} = []; #used when aggregating, needs to ne initialized
                 push(@$rows, $row);
             }
             catch
@@ -556,11 +562,58 @@ sub GetIndex($$)
         if($last_iter)
         {
             close $fh or die "$!";
-            $$self{index}{$table_name} = $rows;
+            $$self{indexes}{$table_name} = [];
+
+            for my $row (@$rows)
+            {
+                $self->AddSingleIndexEntry($table_name, $row);
+            }
             return;
         }
     }
     ASSERT(0);
+}
+
+
+=documentation
+    "Aggregates" the index entries to a data structure which is fast to search
+    through and can handle multiple entries of the same id.
+=cut
+
+sub AddSingleIndexEntry($$$)
+{
+    my ($self, $table_name, $row) = @_;
+
+    ASSERT(defined $self);
+    ASSERT(defined $table_name);
+    ASSERT($table_name ne '');
+    ASSERT(defined $$row{id});
+    ASSERT(defined $$row{record_begin});
+
+    if(!defined $$self{indexes}{$table_name})
+    {
+        $$self{indexes}{$table_name} = [];
+        push @{$$self{indexes}{$table_name}}, $row;
+        push (@{$$self{indexes}{$table_name}[0]{records}}, $$row{record_begin});
+        return;
+    }
+    my $times = @{$$self{indexes}{$table_name}};
+
+    my $hash = {};
+
+    my $last_idx = 0;
+    for (my $i = 0; $i < $times; $i++)
+    {
+        ASSERT(defined $$self{indexes}{$table_name}[$i]);
+        $last_idx++;
+        if($$self{indexes}{$table_name}[$i]{id} == $$row{id})
+        {
+            push (@{$$self{indexes}{$table_name}[$i]{records}}, $$row{record_begin});
+            return;
+        }
+    }
+    push @{$$self{indexes}{$table_name}}, $row;
+    push (@{$$self{indexes}{$table_name}[$last_idx]{records}}, $$row{record_begin});
 }
 
 =documentation
@@ -574,7 +627,10 @@ sub RefreshIndex($$)
     my ($self, $table_name) = @_;
 
     ASSERT(defined $self);
-    ASSERT(defined $$self{index}{$table_name}, "The index isn't read for this table");
+    ASSERT(defined $$self{indexes}{$table_name}, "The index isn't read for this table");
+
+    my @arr =  sort{$$a{id} <=> $$b{id}} @{$$self{indexes}{$table_name}};
+    $$self{indexes}{$table_name} = \@arr;
 }
 
 =documentation
@@ -588,17 +644,131 @@ sub ReleaseIndex($$)
     ASSERT(defined $self);
     ASSERT(defined $table_name);
 
-    delete $$self{index}{table_name};
+    delete $$self{indexes}{table_name};
 }
 
 =pod
     @paramin $table_name  the name of the Table
     @paramin $look_for the value for which is looked for
     @paramout the byte from which the beginning of each row
-=cut
-sub SearchInIndex($$)
-{
 
+    Basically a custom version of the binary search;
+=cut
+sub SearchInIndex($$$)
+{
+    my ($self, $table_name, $look_for) = @_;
+
+    ASSERT(defined $self);
+    ASSERT(defined $table_name);
+    ASSERT($table_name ne '');
+    ASSERT(defined $look_for);
+    ASSERT(defined $$self{indexes}{$table_name});
+
+    my $low = 0;
+    my $high = scalar(@{$$self{indexes}{$table_name}});
+    while($low <= $high)
+    {
+        #print "LOW IS $low HIGH IS $high \n\n";
+        my $middle = int(($low + $high) / 2);
+        #print "MIDDLE IS: $middle\n";
+        if ($look_for < $$self{indexes}{$table_name}[$middle]{id})
+        {
+            $high = $middle - 1;
+        }
+        elsif ($look_for > $$self{indexes}{$table_name}[$middle]{id})
+        {
+            $low = $middle + 1;
+        }
+       else
+       {
+           #print "FOUND IT \n";
+           return $$self{indexes}{$table_name}[$middle]{records};
+       }
+    }
+}
+
+
+=documentation
+    @param table_name the name of the table from which will be selected
+    @param rows an array which contains the starting bytes of a each row
+=cut
+
+sub IndexSelect($$$;$)
+{
+    my ($self, $table_name, $id, $filters) = @_;
+
+    ASSERT(defined $self);
+    ASSERT(defined $$self{indexes}{$table_name});
+    ASSERT(defined $table_name);
+    ASSERT($table_name ne '');
+    ASSERT(defined $id);
+
+    my $table_data = $self->GetTableDetails($table_name);
+    ASSERT(defined $table_data);
+    ASSERT(defined $$table_data{columns});
+
+    my $index_matches = $self->SearchInIndex($table_name, $id);
+
+    my $fh;
+    open($fh, "<", "$$self{connection}/$table_name") or die "Cloud not open db for reading!".$!;
+
+    my $rows = ();
+    my $row;
+    my $positions = []; #contains the starting position (in bytes of every value)
+    my $last_iter = 0;
+    print Dumper @$index_matches;
+    # Get one row from the table
+    for my $row_position (@$index_matches)
+    {
+        #print "row position: $row_position \n";
+        seek($fh, $row_position, 0);
+
+        $row = {};
+        $positions = [];
+
+        # Get one row from the table
+        for my $element (@{$$table_data{columns}})
+        {
+            ASSERT(defined $$element{column_name});
+            ASSERT(defined $$element{column_type});
+            $$row{$$element{column_name}} = $$data_types{$$element{column_type}}{unpack}->($fh, $positions);
+
+            # You have reached a row which is currently inserted.
+            if(defined $$row{row_status} && $$row{row_status} == 2)
+            {
+                $last_iter = 1;
+            }
+
+        }
+        if($last_iter)
+        {
+            close $fh or die "$!";
+            return $rows;
+        }
+
+        if(!defined $filters)
+        {
+            push(@$rows, $row);
+        }
+        else
+        {
+            for my $look_for (@$filters)
+            {
+                ASSERT(defined $$look_for{column_name});
+                ASSERT(defined $$look_for{desired_value});
+                ASSERT(defined $$look_for{compare_by});
+
+                # basically calls the compare function from the data_types object.
+                # TODO make it more readable
+                if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
+                {
+                    push(@$rows, $row);
+                    last;
+                }
+            }
+        }
+    }
+    return $rows;
 }
 
 
@@ -695,7 +865,6 @@ sub GetTableDetails($;$)
         }
     }
 }
-
 
 =documentation
     This function Performs an operation after reading a row from the database
