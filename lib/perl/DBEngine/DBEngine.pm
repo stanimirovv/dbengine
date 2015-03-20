@@ -7,9 +7,14 @@ use Data::Dumper;
 use Try::Tiny;
 use Fcntl qw(:flock SEEK_END);
 
-#TODO add constraints
-#TODO add assert that no column name starts with meta.
+#TODO add caller
 #TODO expaind documentation
+#TODO add constraints
+#TODO add type that uses constraints
+#TODO remove MapEntries
+#TODO expand tests
+#TODO move the table meta in the beginning of the table's file
+
 =pod
     Below are the definitions for every implemented data type.
 =cut
