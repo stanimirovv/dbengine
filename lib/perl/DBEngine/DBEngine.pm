@@ -315,7 +315,8 @@ sub CreateTable($$$)
     print $fh $bytes or die " ".$!;
 
     #column with meta data storing if the row is deleted or not.
-    unshift(@$table_schema, {name => "meta_is_deleted", type => 1});
+    unshift(@$table_schema, {name => "id", type => 1});
+    unshift(@$table_schema, {name => "row_status", type => 1});
 
     #add every column
     for my $column (@$table_schema)
@@ -337,6 +338,7 @@ sub CreateTable($$$)
     open($fh, '>', "$$self{connection}/$table_name") or die "Can't create database file!".$!;
     close($fh) or die $!;
 
+    #INDEX
     open $fh, ">>", "$$self{root}/$$self{connection}/$$self{connection}"."_index" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
     close $fh or die "Cloud not close file...\n";
 }
@@ -374,42 +376,64 @@ sub InsertInto($$$)
     #ASSERT(scalar(keys(%{$$table{columns}}) == scalar(keys(%$values), "The number of columns to insert doesn't match the number of columns in the table");
 
     # make sure the row isn't inserted as deleted.
-    $$values{meta_is_deleted} = 0;
+    # status is deleted values:
+    # 0 is not deleted
+    # 1 is deleted
+    # 2 is not finished inserting
+    $$values{row_status} = 2;
 
     my @bytes = ();
     for my $key (@{$$table_info{columns_names}})
     {
         ASSERT(defined $$values{$key}, "Undefined values are not supported... yet... \n");
 
-        if($key eq 'a')
+        my $fh1;
+
+        # Handles the index
+        if($key eq 'id')
         {
             open $fh1, ">>", "$$self{root}/$$self{connection}/$$self{connection}"."_index" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
-            
+
             my @bytes_inner = ();
             push @bytes_inner, PackInteger($$values{$key});
             push @bytes_inner, PackInteger(tell($fh));
             for my $vals_bytes (@bytes_inner)
             {
                 for my $bytes (@$vals_bytes)
-                {   
+                {
                     print $fh1 $bytes;
-                }   
-            }   
+                }
+            }
             close $fh1 or die "Cloud not close file...\n";
         }
+
 
         # TODO add constraints (again)
         push(@bytes, $$data_types{$$table_info{columns_hash}{$key}}{pack}->($$values{$key}));
     }
+
+    my $row_status_pos = undef;
     for my $vals_bytes (@bytes)
     {
         for my $bytes (@$vals_bytes)
         {
+            if(!defined $row_status_pos)
+            {
+                $row_status_pos = tell($fh);
+            }
             print $fh $bytes;
         }
     }
 
+    my $fh_set_status;
     close($fh) or die "Cloud not close table fh!".$!;
+
+    open ($fh_set_status, "+<", "$$self{connection}/$table") or die $!;
+    flock($fh_set_status, LOCK_EX) or die "Cloud not lock file (delete)\n";
+    seek($fh_set_status, $row_status_pos, 0);
+    my $stat = pack('i', 0);
+    print $fh_set_status $stat;
+    close($fh_set_status) or die "Cloud not close fh!".$!;
 }
 
 sub TruncateTable($$)
@@ -455,7 +479,7 @@ sub Update($$$$)
     #ASSERT(defined $filter);
     ASSERT(defined $new_row);
 
-    $self->MapEntries('simple_text', 'update', $filter, {new_row => $new_row});
+    $self->MapEntries($table_name, 'update', $filter, {new_row => $new_row});
 }
 
 ############################# END API #########################################
@@ -582,14 +606,14 @@ sub MapEntries($$$;$$)
 
     if(lc $method eq "select_index")
     {
-        my $index_rows = {}; 
+        my $index_rows = {};
         # Read entire table..
         for my $indexed_row (%{$index_rows})
         {
             $row = {};
             $positions = [];
         # read one row.
-            seek($fh, $$indexed_row{position});
+            seek($fh, 0, $$indexed_row{position});
             for my $element (@{$$table_data{columns}})
             {
                 ASSERT(defined $$element{column_name});
@@ -636,7 +660,8 @@ sub MapEntries($$$;$$)
     {
         $row = {};
         $positions = [];
-        # read one row.
+
+        # Get one row from the table
         for my $element (@{$$table_data{columns}})
         {
             ASSERT(defined $$element{column_name});
@@ -656,6 +681,12 @@ sub MapEntries($$$;$$)
                     die $_;
                 }
             };
+
+            # You have reached a row which is currently inserted.
+            if(defined $$row{row_status} && $$row{row_status} == 2)
+            {
+                $last_iter = 1;
+            }
 
         }
         if($last_iter)
