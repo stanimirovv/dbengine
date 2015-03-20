@@ -200,6 +200,29 @@ sub UnpackText($$)
 
 }
 
+=documentation
+The "InternalValue" may change. Currently it is an integer and it is used
+when statuses are needed.
+
+List of statuses:
+0 Row is ok
+1 Row is deleted
+2 Row is still inserted
+=cut
+
+sub PackInternalValue($)
+{
+    my ($internal_value) = @_;
+
+    ASSERT(defined $internal_value, "Undefined integer!");
+
+    #It is an array ref since most types will contain more than one field
+    #For example text has two - length and data
+    my $bytes;
+    $bytes = pack('i', int($internal_value)); #dies if not a number
+    return $bytes;;
+}
+
 ############################# END TYPES #######################################
 
 ############################# API #############################################
@@ -302,6 +325,16 @@ sub CreateTable($$$)
     print Dumper $table;
     ASSERT(!defined($table), "Table alredy exists!");
 
+    # Make sure the columns don't have name of internal columns
+    for my $column (@$table_schema)
+    {
+        ASSERT(defined $$column{name}, " Undefined column name");
+        ASSERT(defined $$column{type}, " Undefined column type");
+        if($$column{name} eq "id" || $$column{name} eq "row_status")
+        {
+            die "You are using reserved column names. Currently id and row_status are reserved!";
+        }
+    }
     seek($$self{meta}, 0, 0);
 
     # all databases are stored in the meta file
@@ -376,10 +409,7 @@ sub InsertInto($$$)
     #ASSERT(scalar(keys(%{$$table{columns}}) == scalar(keys(%$values), "The number of columns to insert doesn't match the number of columns in the table");
 
     # make sure the row isn't inserted as deleted.
-    # status is deleted values:
-    # 0 is not deleted
-    # 1 is deleted
-    # 2 is not finished inserting
+    # view PackInternalValue for status definitions
     $$values{row_status} = 2;
 
     my @bytes = ();
@@ -431,8 +461,7 @@ sub InsertInto($$$)
     open ($fh_set_status, "+<", "$$self{connection}/$table") or die $!;
     flock($fh_set_status, LOCK_EX) or die "Cloud not lock file (delete)\n";
     seek($fh_set_status, $row_status_pos, 0);
-    my $stat = pack('i', 0);
-    print $fh_set_status $stat;
+    print $fh_set_status PackInternalValue(0);
     close($fh_set_status) or die "Cloud not close fh!".$!;
 }
 
@@ -445,6 +474,12 @@ sub TruncateTable($$)
     ASSERT($table_name ne '');
 
     my $fh;
+    open($fh, ">", "$$self{connection}/$table_name"."_meta") or die "Cloud not open db for reading!".$!;
+    $| = 1;
+    print $fh "";
+
+    close $fh or die "Cloud not close fh..".$!;
+
     open($fh, ">", "$$self{connection}/$table_name") or die "Cloud not open db for reading!".$!;
     $| = 1;
     print $fh "";
