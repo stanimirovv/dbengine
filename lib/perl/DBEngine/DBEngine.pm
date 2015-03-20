@@ -239,7 +239,7 @@ sub new($)
     ASSERT(defined $root, 'undefined root!');
     ASSERT($root ne '', "undefined database root!");
 
-    my $self = {root => $root};
+    my $self = {root => $root, indexes => {}};
 
     bless $self;
     return $self;
@@ -518,14 +518,16 @@ sub Update($$$$)
 }
 
 
-sub SelectIndex($$;$)
+=documentation
+    @paramin table_name string, the name of the table
+
+    Updates the index of for an entire table. Always reads the entire (index) table.
+=cut
+
+sub GetIndex($$)
 {
-    my ($self, $table_name, $filters) = @_;
-    #TODO read index Table
-    #TODO go to each Row beginning and read each row
-
+    my ($self, $table_name) = @_;
     my $rows = [];
-
     my $fh;
 
     open($fh, "<", "$$self{connection}/$table_name"."_index") or die "$!";
@@ -554,61 +556,50 @@ sub SelectIndex($$;$)
         if($last_iter)
         {
             close $fh or die "$!";
-            return $rows;
+            $$self{index}{$table_name} = $rows;
+            return;
         }
     }
-    my $index_rows = {};
-
-=pod
-    # Read entire table..
-    for my $indexed_row (%{$index_rows})
-    {
-        $row = {};
-        $positions = [];
-    # read one row.
-        seek($fh, 0, $$indexed_row{position});
-        for my $element (@{$$table_data{columns}})
-        {
-            ASSERT(defined $$element{column_name});
-            ASSERT(defined $$element{column_type});
-            try
-            {
-                $$row{$$element{column_name}} = $$data_types{$$element{column_type}}{unpack}->($fh, $positions);
-            }
-            catch
-            {
-                if(index($_, 'EOF') != -1)
-                {
-                    $last_iter = 1;
-                }
-                else
-                {
-                    die $_;
-                }
-            };
-
-        }
-
-    }
-    for my $look_for (@$filters)
-    {
-        ASSERT(defined $$look_for{column_name});
-        ASSERT(defined $$look_for{desired_value});
-        ASSERT(defined $$look_for{compare_by});
-        if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
-        {
-            if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
-            {
-                push(@$rows, $row);
-                last;
-            }
-        }
-    }
-=cut
-
-    return $rows;
+    ASSERT(0);
 }
 
+=documentation
+    @paramin table_name
+
+    Sorts the index for table table_name.
+=cut
+
+sub RefreshIndex($$)
+{
+    my ($self, $table_name) = @_;
+
+    ASSERT(defined $self);
+    ASSERT(defined $$self{index}{$table_name}, "The index isn't read for this table");
+}
+
+=documentation
+    @paramin table_name
+    Deletes the index for table_name from the memory
+=cut
+sub ReleaseIndex($$)
+{
+    my ($self, $table_name) = @_;
+
+    ASSERT(defined $self);
+    ASSERT(defined $table_name);
+
+    delete $$self{index}{table_name};
+}
+
+=pod
+    @paramin $table_name  the name of the Table
+    @paramin $look_for the value for which is looked for
+    @paramout the byte from which the beginning of each row
+=cut
+sub SearchInIndex($$)
+{
+
+}
 
 
 ############################# END API #########################################
