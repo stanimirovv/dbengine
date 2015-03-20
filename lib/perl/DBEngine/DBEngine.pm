@@ -145,7 +145,7 @@ sub PackInteger($)
 @param positions - array ref containing the positions of each column
 =cut
 
-sub UnpackInteger($$)
+sub UnpackInteger($;$)
 {
     my ($fh, $positions) = @_;
 
@@ -372,7 +372,7 @@ sub CreateTable($$$)
     close($fh) or die $!;
 
     #INDEX
-    open $fh, ">>", "$$self{root}/$$self{connection}/$$self{connection}"."_index" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
+    open $fh, ">>", "$$self{root}/$$self{connection}/$table_name"."_index" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
     close $fh or die "Cloud not close file...\n";
 }
 
@@ -382,7 +382,7 @@ sub DropTable($$)
 
     ASSERT(defined $self);
     ASSERT(defined $table_name, ' No table specified!');
-
+    ASSERT(unlink("$$self{connection}/$table_name"."_index"), ' Error when dropping the table'.$!);
     ASSERT(unlink("$$self{connection}/$table_name"), ' Error when dropping the table'.$!);
 
 }
@@ -422,7 +422,7 @@ sub InsertInto($$$)
         # Handles the index
         if($key eq 'id')
         {
-            open $fh1, ">>", "$$self{root}/$$self{connection}/$$self{connection}"."_index" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
+            open $fh1, ">>", "$$self{root}/$$self{connection}/$table"."_index" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
 
             my @bytes_inner = ();
             push @bytes_inner, PackInteger($$values{$key});
@@ -516,6 +516,100 @@ sub Update($$$$)
 
     $self->MapEntries($table_name, 'update', $filter, {new_row => $new_row});
 }
+
+
+sub SelectIndex($$;$)
+{
+    my ($self, $table_name, $filters) = @_;
+    #TODO read index Table
+    #TODO go to each Row beginning and read each row
+
+    my $rows = [];
+
+    my $fh;
+
+    open($fh, "<", "$$self{connection}/$table_name"."_index") or die "$!";
+    my $last_iter = 0;
+    while(1)
+    {
+            # read one row.
+            try
+            {
+                my $row = {};
+                $$row{id} = UnpackInteger($fh);
+                $$row{record_begin} = UnpackInteger($fh);
+                push(@$rows, $row);
+            }
+            catch
+            {
+                if(index($_, 'EOF') != -1)
+                {
+                    $last_iter = 1;
+                }
+                else
+                {
+                    die $_;
+                }
+            };
+        if($last_iter)
+        {
+            close $fh or die "$!";
+            return $rows;
+        }
+    }
+    my $index_rows = {};
+
+=pod
+    # Read entire table..
+    for my $indexed_row (%{$index_rows})
+    {
+        $row = {};
+        $positions = [];
+    # read one row.
+        seek($fh, 0, $$indexed_row{position});
+        for my $element (@{$$table_data{columns}})
+        {
+            ASSERT(defined $$element{column_name});
+            ASSERT(defined $$element{column_type});
+            try
+            {
+                $$row{$$element{column_name}} = $$data_types{$$element{column_type}}{unpack}->($fh, $positions);
+            }
+            catch
+            {
+                if(index($_, 'EOF') != -1)
+                {
+                    $last_iter = 1;
+                }
+                else
+                {
+                    die $_;
+                }
+            };
+
+        }
+
+    }
+    for my $look_for (@$filters)
+    {
+        ASSERT(defined $$look_for{column_name});
+        ASSERT(defined $$look_for{desired_value});
+        ASSERT(defined $$look_for{compare_by});
+        if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
+        {
+            if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
+            {
+                push(@$rows, $row);
+                last;
+            }
+        }
+    }
+=cut
+
+    return $rows;
+}
+
+
 
 ############################# END API #########################################
 
@@ -638,58 +732,6 @@ sub MapEntries($$$;$$)
     my $row;
     my $positions = []; #contains the starting position (in bytes of every value)
     my $last_iter = 0;
-
-    if(lc $method eq "select_index")
-    {
-        my $index_rows = {};
-        # Read entire table..
-        for my $indexed_row (%{$index_rows})
-        {
-            $row = {};
-            $positions = [];
-        # read one row.
-            seek($fh, 0, $$indexed_row{position});
-            for my $element (@{$$table_data{columns}})
-            {
-                ASSERT(defined $$element{column_name});
-                ASSERT(defined $$element{column_type});
-                try
-                {
-                    $$row{$$element{column_name}} = $$data_types{$$element{column_type}}{unpack}->($fh, $positions);
-                }
-                catch
-                {
-                    if(index($_, 'EOF') != -1)
-                    {
-                        $last_iter = 1;
-                    }
-                    else
-                    {
-                        die $_;
-                    }
-                };
-
-            }
-
-        }
-        for my $look_for (@$filters)
-        {
-            ASSERT(defined $$look_for{column_name});
-            ASSERT(defined $$look_for{desired_value});
-            ASSERT(defined $$look_for{compare_by});
-            if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
-            {
-                if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
-                {
-                    push(@$rows, $row);
-                    last;
-                }
-            }
-        }
-
-        return $rows;
-    }
-
 
     while(1)
     {
