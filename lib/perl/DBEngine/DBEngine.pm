@@ -14,6 +14,10 @@ use Fcntl qw(:flock SEEK_END);
 #TODO remove MapEntries
 #TODO expand tests
 #TODO move the table meta in the beginning of the table's file
+#TODO stop using magic variables
+
+#TODO fix the corrupted data
+#TODO fix the update delete
 
 =pod
     Below are the definitions for every implemented data type.
@@ -213,6 +217,7 @@ List of statuses:
 0 Row is ok
 1 Row is deleted
 2 Row is still inserted
+3 Row is staged for removing, but the row that must be inserted on it's place isn't inserted yet.
 =cut
 
 sub PackInternalValue($)
@@ -407,10 +412,13 @@ sub InsertInto($$$)
 
     my $table_info = $self->GetTableDetails($table);
     my $fh;
+    my $fh1;
     open($fh, '>>', "$$self{connection}/$table") or die " Cloud not open the table".$!;
 
     flock($fh, LOCK_EX) or die "Cloud not lock file!";
     ASSERT(defined $table_info, "The table in which an insert is attempted doesn't exist");
+    open $fh1, ">>", "$$self{root}/$$self{connection}/$table"."_index" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
+    flock($fh1, LOCK_EX);
     #ASSERT(scalar(keys(%{$$table{columns}}) == scalar(keys(%$values), "The number of columns to insert doesn't match the number of columns in the table");
 
     # make sure the row isn't inserted as deleted.
@@ -422,12 +430,10 @@ sub InsertInto($$$)
     {
         ASSERT(defined $$values{$key}, "Undefined values are not supported... yet... \n");
 
-        my $fh1;
 
         # Handles the index
         if($key eq 'id')
         {
-            open $fh1, ">>", "$$self{root}/$$self{connection}/$table"."_index" or die "Cloud not read meta file. Does $$self{connection}_meta exist ? Are permissions ok?".$!;
 
             my @bytes_inner = ();
             push @bytes_inner, PackInteger($$values{$key});
@@ -965,6 +971,7 @@ sub MapEntries($$$;$$)
         elsif(lc($method) eq 'update')
         {
             ASSERT(defined $$params{new_row});
+            
             if(!defined $filters)
             {
                 print "tt1\n";
@@ -972,9 +979,10 @@ sub MapEntries($$$;$$)
                 open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
                 seek($fh_d, $$positions[0], 0);
 
-                my $del = pack('i', 1);
-                print $fh_d $del;
-                close $fh_d;
+                #Stage for deletion
+                my $del_stage = pack('i', 3);
+                print $fh_d $del_stage or die;
+                close $fh_d or die;
             }
             else
             {
@@ -988,13 +996,19 @@ sub MapEntries($$$;$$)
                     open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
                     seek($fh_d, $$positions[0], 0);
 
-                    my $del = pack('i', 1);
-                    print $fh_d $del;
-                    close $fh_d;
+                    my $del = pack('i', 3);
+                    print $fh_d $del or die;
+                    close $fh_d or die;
                 }
             }
 
             $self->InsertInto($table_name, $$params{new_row});
+            
+            seek($fh_d, $$positions[0], 0);
+            my $del = pack('i', 3);
+            print $fh_d $del or die;
+            close $fh_d or die;
+ 
         }
         elsif(lc $method eq 'delete')
         {
@@ -1007,8 +1021,8 @@ sub MapEntries($$$;$$)
                 seek($fh_d, $$positions[0], 0);
 
                 my $del = pack('i', 1);
-                print $fh_d $del;
-                close $fh_d;
+                print $fh_d $del or die;
+                close $fh_d or die;
             }
             else
             {
@@ -1025,14 +1039,53 @@ sub MapEntries($$$;$$)
                         seek($fh_d, $$positions[0], 0);
 
                         my $del = pack('i', 1);
-                        print $fh_d $del;
-                        close $fh_d;
+                        print $fh_d $del or die;
+                        close $fh_d or die;
                         last;
                     }
                 }
             }
 
         }
+        elsif(lc $method eq 'stage_delete')
+        {
+
+            if(!defined $filters)
+            {
+                my $fh_d;
+                open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
+                flock($fh_d, LOCK_EX) or die "Cloud not lock file (delete)\n";
+                seek($fh_d, $$positions[0], 0);
+
+                my $del = pack('i', 3);
+                print $fh_d $del or die;
+                close $fh_d or die;
+            }
+            else
+            {
+                for my $look_for (@$filters)
+                {
+                    ASSERT(defined $$look_for{column_name});
+                    ASSERT(defined $$look_for{desired_value});
+                    ASSERT(defined $$look_for{compare_by});
+
+                    if($$data_types{$$table_data{columns_hash}{$$look_for{column_name}}}{compare}->($$row{$$look_for{column_name}},$$look_for{desired_value}, $$look_for{compare_by}))
+                    {
+                        my $fh_d;
+                        open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
+                        seek($fh_d, $$positions[0], 0);
+
+                        my $del = pack('i', 3);
+                        print $fh_d $del or die;
+                        close $fh_d or die;
+                        last;
+                    }
+                }
+            }
+
+        }
+
+
     }
     close $fh or die "can't close fh".$!;
     return $rows;
