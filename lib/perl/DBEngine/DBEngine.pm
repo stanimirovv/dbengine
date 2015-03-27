@@ -7,17 +7,14 @@ use Data::Dumper;
 use Try::Tiny;
 use Fcntl qw(:flock SEEK_END);
 
-#TODO add caller
-#TODO expaind documentation
 #TODO add constraints
 #TODO add type that uses constraints
-#TODO remove MapEntries
 #TODO expand tests
 #TODO move the table meta in the beginning of the table's file
 #TODO stop using magic variables
 
 #TODO fix the corrupted data
-#TODO fix the update delete
+#TODO fix the multi table issue.
 
 =pod
     Below are the definitions for every implemented data type.
@@ -971,11 +968,11 @@ sub MapEntries($$$;$$)
         elsif(lc($method) eq 'update')
         {
             ASSERT(defined $$params{new_row});
-            
+           
+            my $fh_d;
             if(!defined $filters)
             {
                 print "tt1\n";
-                my $fh_d;
                 open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
                 seek($fh_d, $$positions[0], 0);
 
@@ -992,7 +989,6 @@ sub MapEntries($$$;$$)
                     ASSERT(defined $$look_for{desired_value});
                     ASSERT(defined $$look_for{compare_by});
 
-                    my $fh_d;
                     open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
                     seek($fh_d, $$positions[0], 0);
 
@@ -1047,7 +1043,7 @@ sub MapEntries($$$;$$)
             }
 
         }
-        elsif(lc $method eq 'stage_delete')
+        elsif(lc $method eq 'delete_stage')
         {
 
             if(!defined $filters)
@@ -1084,6 +1080,18 @@ sub MapEntries($$$;$$)
             }
 
         }
+        elsif(lc $method eq 'restore_delete_stage')
+        {
+            my $fh_d;
+            open $fh_d, "+<", "$$self{connection}/$table_name" or die $!;
+            flock($fh_d, LOCK_EX) or die "Cloud not lock file (delete)\n";
+            seek($fh_d, $$positions[0], 0);
+
+            my $del = pack('i', 0);
+            print $fh_d $del or die;
+            close $fh_d or die;
+        }
+
 
 
     }
