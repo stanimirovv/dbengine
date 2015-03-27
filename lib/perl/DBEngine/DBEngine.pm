@@ -8,13 +8,10 @@ use Try::Tiny;
 use Fcntl qw(:flock SEEK_END);
 
 #TODO add constraints
-#TODO add type that uses constraints
-#TODO expand tests
-#TODO move the table meta in the beginning of the table's file
 #TODO stop using magic variables
 
-#TODO fix the corrupted data
 #TODO fix the multi table issue.
+#TODO turn off checks for freshly created tables
 
 =pod
     Below are the definitions for every implemented data type.
@@ -288,6 +285,9 @@ sub Connect($$)
 
     $$self{connection} = $dbname;
 
+    my $fh;
+    $self->MapEntries('simple_text', 'restore_delete_stage');
+    $self->ClearCorruptedRow('simple_text');
 }
 
 =documentation
@@ -466,14 +466,41 @@ sub InsertInto($$$)
         }
     }
 
-    my $fh_set_status;
     close($fh) or die "Cloud not close table fh!".$!;
+    my $fh_set_status;
 
+    #flock($fh_set_status, LOCK_EX) or die "Cloud not lock file (delete)\n";
     open ($fh_set_status, "+<", "$$self{connection}/$table") or die $!;
-    flock($fh_set_status, LOCK_EX) or die "Cloud not lock file (delete)\n";
     seek($fh_set_status, $row_status_pos, 0);
     print $fh_set_status PackInternalValue(0);
-    close($fh_set_status) or die "Cloud not close fh!".$!;
+    #close($fh_set_status) or die "Cloud not close fh!".$!;
+    close($fh_set_status) or die $!;
+}
+
+
+sub ClearCorruptedRow($$)
+{
+    my ($self, $table_name) = @_;
+    
+    my $fh;
+    open($fh, "+<", "$$self{connection}/$table_name") or die "Cloud not open db for reading!".$!;
+    flock($fh, LOCK_EX) or die "Cloud not lock file!";
+
+    my $bytes;
+    my $read_bytes = read($fh, $bytes, 4);
+    ASSERT($read_bytes == 4, "Something went wrong when reading ");
+    my $val = unpack("i", $bytes);
+    close $fh or die "cloud not close fh  $!";
+    #there is no corrupted file
+    if($val == 0)
+    {
+        return;
+    }
+
+my     ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
+    $atime,$mtime,$ctime,$blksize,$blocks) = stat($$self{connection}/$table_name);
+    truncate($$self{connection}/$table_name, ($size - $val)); 
+
 }
 
 sub TruncateTable($$)
