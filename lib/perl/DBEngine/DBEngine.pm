@@ -376,6 +376,9 @@ sub CreateTable($$$)
 
     # Database data file
     open($fh, '>', "$$self{connection}/$table_name") or die "Can't create database file!".$!;
+    # The first 4 bytes (integer) determine the position of the last row that started being inserted
+    # If it's value is 0 it means that all rows are successfully inserted
+    print $fh $bytes or die "".$!;
     close($fh) or die $!;
 
     #INDEX
@@ -895,6 +898,8 @@ sub MapEntries($$$;$$)
 
     my $fh;
     open($fh, "<", "$$self{connection}/$table_name") or die "Cloud not open db for reading!".$!;
+    my $last_insert_ok;
+    read($fh, $last_insert_ok, 4);
 
     my $rows = ();
     my $row;
